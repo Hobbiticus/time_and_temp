@@ -1,19 +1,15 @@
 #include <Arduino.h>
 #include <ezTime.h>
 #include <ESP8266WiFi.h>
+#include "../../CentralBrain/include/WeatherProtocol.h"
+#include "../../CentralBrain/include/IngestProtocol.h"
 #include <WiFiUdp.h>
 
 #include "creds.h"
 
-//#define REMOTE_IP "192.168.1.220"
 WiFiUDP Udp;
-//IPAddress local_IP(192, 168, 1, 222);
-IPAddress remote_IP(192, 168, 1, 220);
-const static unsigned short RemotePort = 5555;
-//IPAddress gateway(192, 168, 1, 1);
-//IPAddress subnet(255, 255, 255, 0);
-//IPAddress primaryDNS(8, 8, 8, 8);
-//IPAddress secondaryDNS(8, 8, 4, 4);
+IPAddress remote_IP(192, 168, 1, 222);
+const static unsigned short RemotePort = 7788;
 
 //D5/6/7 = 14/12/13
 #define SHIFT_CLOCK_PIN D5
@@ -27,20 +23,6 @@ int lastMinute = 0;
 
 
 //stuff to handle pin swapping
-// unsigned char OutputToBCD_14[10] =
-// {
-//   5, //0
-//   4, //1
-//   6, //2
-//   7, //3
-//   3, //4
-//   2, //5
-//   8, //6
-//   9, //7
-//   0, //8
-//   1  //9
-// };
-
 unsigned char OutputToBCD_14[10] =
 {
   4, //0
@@ -229,7 +211,10 @@ void RequestTemperature()
 {
   Serial.println("Requesting temperature...");
   Udp.beginPacket(remote_IP, RemotePort);
-  Udp.write("query");
+  unsigned char pkt[1 + sizeof(struct WeatherHeader)];
+  WeatherHeader* weather = (WeatherHeader*)(pkt + 1);
+  weather->m_DataIncluded = WEATHER_TEMP_BIT;
+  Udp.write(pkt, sizeof(pkt));
   Udp.endPacket();  
 }
 
@@ -249,11 +234,12 @@ void CheckForTemperature()
   Serial.println("++++++++++++++++++++++++++++++++++++++++++++++++ got a packet!");
   char buffer[32];
   int bytes = Udp.read(buffer, sizeof(buffer));
-  if (bytes >= 4)
+  if (bytes >= sizeof(WeatherHeader) + sizeof(TemperatureData))
   {
-    short temperature = ntohs(*((short*)(buffer+0)));
-    Serial.println("new temp is " + String(temperature));
-    CurrentTemperature = temperature;
+    WeatherHeader* weather = (WeatherHeader*)buffer;
+    TemperatureData* tempData = (TemperatureData*)(weather + 1);
+    Serial.println("new temp is " + String(tempData->m_Temperature));
+    CurrentTemperature = tempData->m_Temperature;
     LastTemperatureResponseTime = millis();
   }
 }
@@ -277,19 +263,14 @@ void setup() {
     delay(100);
     Serial.println("Waiting for wifi to connect...");
   }
-
-  Udp.begin(54321);
-  RequestTemperature();
-
+  
   waitForSync();
   myTZ.setLocation("America/New_York");
-
-  //CheckForTemperature();
-  //OutputTimeAndTemp(myTZ.hour(), myTZ.minute(), CurrentTemperature);
 }
 
 //bool on = true;
 unsigned int LastRequestTemperatureTime = 0;
+
 void loop()
 {
   events(); //ezTime events()
