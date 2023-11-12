@@ -7,9 +7,16 @@
 
 #include "creds.h"
 
-WiFiUDP Udp;
+#define USE_CENTRAL_BRAIN
+
+#ifdef USE_CENTRAL_BRAIN
 IPAddress remote_IP(192, 168, 1, 222);
 const static unsigned short RemotePort = 7788;
+#else
+WiFiUDP Udp;
+IPAddress remote_IP(192, 168, 1, 220);
+const static unsigned short RemotePort = 5555;
+#endif
 
 //D5/6/7 = 14/12/13
 #define SHIFT_CLOCK_PIN D5
@@ -207,6 +214,52 @@ void debugloop(int delayMS)
   }
 }
 
+int CurrentTemperature = 12333;
+unsigned int LastTemperatureResponseTime = 0;
+
+#ifdef USE_CENTRAL_BRAIN
+void FetchTemperature()
+{
+  WiFiClient client;
+  client.setTimeout(1000); //be pretty quick
+  if (!client.connect(remote_IP, RemotePort))
+  {
+    Serial.println("Failed to connect to centeral brain");
+    return;
+  }
+
+  unsigned char pkt[1 + sizeof(WeatherHeader)];
+  pkt[0] = DATA_TYPE_WEATHER;
+  WeatherHeader* outHeader = (WeatherHeader*)(pkt + 1);
+  outHeader->m_DataIncluded = WEATHER_TEMP_BIT;
+  int outBytes = client.write(pkt, sizeof(pkt));
+  Serial.printf("Out bytes = %d of %d\n", outBytes, sizeof(pkt));
+  if (outBytes != sizeof(pkt))
+  {
+    Serial.println("Failed to write request");
+    client.stop();
+    return;
+  }
+
+  unsigned char inPkt[sizeof(WeatherHeader) + sizeof(TemperatureData)];
+  int numBytes = client.readBytes(inPkt, sizeof(inPkt));
+  if (numBytes < sizeof(inPkt))
+  {
+    Serial.printf("Only got %d of %d bytes in response\n", numBytes, sizeof(inPkt));
+    client.stop();
+    return;
+  }
+
+  WeatherHeader* weather = (WeatherHeader*)inPkt;
+  TemperatureData* tempData = (TemperatureData*)(weather + 1);
+  Serial.printf("new temp is %u or %.1f F\n", tempData->m_Temperature, tempData->m_Temperature / 100.0 * 9 / 5 + 32);
+
+  CurrentTemperature = tempData->m_Temperature;
+  LastTemperatureResponseTime = millis();
+}
+
+#else
+
 void RequestTemperature()
 {
   Serial.println("Requesting temperature...");
@@ -217,9 +270,6 @@ void RequestTemperature()
   Udp.write(pkt, sizeof(pkt));
   Udp.endPacket();  
 }
-
-int CurrentTemperature = 12333;
-unsigned int LastTemperatureResponseTime = 0;
 
 void CheckForTemperature()
 {
@@ -243,6 +293,7 @@ void CheckForTemperature()
     LastTemperatureResponseTime = millis();
   }
 }
+#endif
 
 void setup() {
   // put your setup code here, to run once:
@@ -264,8 +315,10 @@ void setup() {
     Serial.println("Waiting for wifi to connect...");
   }
   
+  Serial.println("Connected to WiFi, syncing time...");
   waitForSync();
   myTZ.setLocation("America/New_York");
+  Serial.println("Ready!");
 }
 
 //bool on = true;
@@ -278,10 +331,16 @@ void loop()
   unsigned int now = millis();
   if (now - LastRequestTemperatureTime > 10000)
   {
+#ifdef USE_CENTRAL_BRAIN
+    FetchTemperature();
+#else
     RequestTemperature();
+#endif
     LastRequestTemperatureTime = now;
   }
+#ifndef USE_CENTRAL_BRAIN
   CheckForTemperature();
+#endif
 
   int hour = myTZ.hour();
   int minute = myTZ.minute();
