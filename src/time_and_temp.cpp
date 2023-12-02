@@ -1,17 +1,19 @@
 #include <Arduino.h>
 #include <ezTime.h>
 #include <ESP8266WiFi.h>
-#include "../../CentralBrain/include/WeatherProtocol.h"
-#include "../../CentralBrain/include/IngestProtocol.h"
+//#include "../../CentralBrain/include/WeatherProtocol.h"
+//#include "../../CentralBrain/include/IngestProtocol.h"
 #include <WiFiUdp.h>
+#include <MQTT.h>
 
 #include "creds.h"
 
-#define USE_CENTRAL_BRAIN
+#define USE_MQTT
 
-#ifdef USE_CENTRAL_BRAIN
-IPAddress remote_IP(192, 168, 1, 222);
-const static unsigned short RemotePort = 7788;
+#ifdef USE_MQTT
+MQTTClient mqtt(256);
+WiFiClient client;
+IPAddress MQTTBrokerAddress(192, 168, 1, 98);
 #else
 WiFiUDP Udp;
 IPAddress remote_IP(192, 168, 1, 220);
@@ -217,49 +219,8 @@ void debugloop(int delayMS)
 int CurrentTemperature = 12333;
 unsigned int LastTemperatureResponseTime = 0;
 
-#ifdef USE_CENTRAL_BRAIN
-void FetchTemperature()
-{
-  WiFiClient client;
-  client.setTimeout(1000); //be pretty quick
-  if (!client.connect(remote_IP, RemotePort))
-  {
-    Serial.println("Failed to connect to centeral brain");
-    return;
-  }
-
-  unsigned char pkt[1 + sizeof(WeatherHeader)];
-  pkt[0] = DATA_TYPE_WEATHER;
-  WeatherHeader* outHeader = (WeatherHeader*)(pkt + 1);
-  outHeader->m_DataIncluded = WEATHER_TEMP_BIT;
-  int outBytes = client.write(pkt, sizeof(pkt));
-  Serial.printf("Out bytes = %d of %d\n", outBytes, sizeof(pkt));
-  if (outBytes != sizeof(pkt))
-  {
-    Serial.println("Failed to write request");
-    client.stop();
-    return;
-  }
-
-  unsigned char inPkt[sizeof(WeatherHeader) + sizeof(TemperatureData)];
-  int numBytes = client.readBytes(inPkt, sizeof(inPkt));
-  if (numBytes < sizeof(inPkt))
-  {
-    Serial.printf("Only got %d of %d bytes in response\n", numBytes, sizeof(inPkt));
-    client.stop();
-    return;
-  }
-
-  WeatherHeader* weather = (WeatherHeader*)inPkt;
-  TemperatureData* tempData = (TemperatureData*)(weather + 1);
-  Serial.printf("new temp is %u or %.1f F\n", tempData->m_Temperature, tempData->m_Temperature / 100.0 * 9 / 5 + 32);
-
-  CurrentTemperature = tempData->m_Temperature;
-  LastTemperatureResponseTime = millis();
-}
-
+#ifdef USE_MQTT
 #else
-
 void RequestTemperature()
 {
   Serial.println("Requesting temperature...");
@@ -295,6 +256,8 @@ void CheckForTemperature()
 }
 #endif
 
+void messageReceived(String &topic, String &payload);
+
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
@@ -314,11 +277,39 @@ void setup() {
     delay(100);
     Serial.println("Waiting for wifi to connect...");
   }
+
+#ifdef USE_MQTT
+  mqtt.begin("homeassistant.local", client);
+  //mqtt.begin(MQTTBrokerAddress, client);
+  if (!mqtt.connect("office_clock", MQTT_USER, MQTT_PASSWORD))
+  {
+    Serial.println("Failed to connect to mqtt broker");
+  }
+  else
+  {
+    Serial.println("Connected to MQTT broker! yay!");
+    mqtt.onMessage(messageReceived);
+    mqtt.subscribe("mydevs/weather/weather_temperature/stat_t");
+  }
+#endif
   
   Serial.println("Connected to WiFi, syncing time...");
   waitForSync();
   myTZ.setLocation("America/New_York");
   Serial.println("Ready!");
+}
+
+void messageReceived(String &topic, String &payload)
+{
+  Serial.println(topic + " == " + payload);
+  double temp = atof(payload.c_str());
+  CurrentTemperature = (int)(temp * 10);
+  int hour = myTZ.hour();
+  int minute = myTZ.minute();
+  if (hour > 1 && hour < 6)
+  {}
+  else
+    OutputTimeAndTemp(hour, minute, CurrentTemperature);
 }
 
 //bool on = true;
@@ -327,18 +318,20 @@ unsigned int LastRequestTemperatureTime = 0;
 void loop()
 {
   events(); //ezTime events()
+#ifdef USE_MQTT
+  mqtt.loop();
+#endif
 
   unsigned int now = millis();
   if (now - LastRequestTemperatureTime > 10000)
   {
-#ifdef USE_CENTRAL_BRAIN
-    FetchTemperature();
+#ifdef USE_MQTT
 #else
     RequestTemperature();
 #endif
     LastRequestTemperatureTime = now;
   }
-#ifndef USE_CENTRAL_BRAIN
+#ifndef USE_MQTT
   CheckForTemperature();
 #endif
 
