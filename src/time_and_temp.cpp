@@ -258,6 +258,21 @@ void CheckForTemperature()
 
 void messageReceived(String &topic, String &payload);
 
+#ifdef USE_MQTT
+bool ConnectToMQTT()
+{
+  if (!mqtt.connect("office_clock", MQTT_USER, MQTT_PASSWORD))
+  {
+    Serial.println("Failed to connect to mqtt broker");
+    return false;
+  }
+  Serial.println("Connected to MQTT broker! yay!");
+  mqtt.onMessage(messageReceived);
+  mqtt.subscribe("mydevs/weather/weather_temperature/stat_t");
+  return true;
+}
+#endif
+
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
@@ -281,16 +296,7 @@ void setup() {
 #ifdef USE_MQTT
   mqtt.begin("homeassistant.local", client);
   //mqtt.begin(MQTTBrokerAddress, client);
-  if (!mqtt.connect("office_clock", MQTT_USER, MQTT_PASSWORD))
-  {
-    Serial.println("Failed to connect to mqtt broker");
-  }
-  else
-  {
-    Serial.println("Connected to MQTT broker! yay!");
-    mqtt.onMessage(messageReceived);
-    mqtt.subscribe("mydevs/weather/weather_temperature/stat_t");
-  }
+  ConnectToMQTT();
 #endif
   
   Serial.println("Connected to WiFi, syncing time...");
@@ -320,6 +326,11 @@ void loop()
   events(); //ezTime events()
 #ifdef USE_MQTT
   mqtt.loop();
+  if (!mqtt.connected())
+  {
+    ConnectToMQTT();
+    mqtt.loop();
+  }
 #endif
 
   unsigned int now = millis();
